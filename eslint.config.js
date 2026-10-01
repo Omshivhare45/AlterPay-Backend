@@ -20,7 +20,9 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: ['*.js', '*.mjs', '*.cjs'],
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -116,6 +118,13 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-argument': 'off',
       '@typescript-eslint/no-unsafe-return': 'off',
       'no-console': 'off',
+    },
+  },
+  {
+    // Test doubles are synchronous by design; require-await is noise there.
+    files: ['tests/**/*.ts'],
+    rules: {
+      '@typescript-eslint/require-await': 'off',
     },
   },
 );

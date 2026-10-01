@@ -1,10 +1,8 @@
-import {
-  PrismaClientInitializationError,
-  type PrismaClient,
-} from '@prisma/client';
+import type { PrismaClient } from '@prisma/client';
 
 import type { CheckOutcome, HealthProbe } from '../../application/health/health.types.js';
 import type { Logger } from '../logging/index.js';
+import { isPrismaInitializationError } from './prisma-errors.js';
 
 const PROBE_TIMEOUT_MS = 2_000;
 
@@ -29,7 +27,7 @@ export function createDatabaseProbe(client: PrismaClient, logger: Logger): Healt
         ]);
         return 'pass';
       } catch (error) {
-        if (error instanceof PrismaClientInitializationError) {
+        if (isPrismaInitializationError(error)) {
           logger.error({ err: error }, 'database_probe_failed');
         } else {
           logger.warn({ err: error }, 'database_probe_failed');

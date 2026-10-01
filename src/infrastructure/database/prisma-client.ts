@@ -1,9 +1,9 @@
-import type { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
 import type { AppConfig } from '../config/index.js';
 import type { Logger } from '../logging/index.js';
 
-export type { PrismaClient } from '@prisma/client';
+export { PrismaClient };
 
 /**
  * Single Prisma client per process. Prisma maintains its own connection pool, so

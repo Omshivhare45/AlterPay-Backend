@@ -1,13 +1,18 @@
-import { PrismaClientKnownRequestError, PrismaClientInitializationError } from '@prisma/client';
+import {
+  PrismaClientInitializationError,
+  PrismaClientKnownRequestError,
+} from '@prisma/client/runtime/library.js';
 
-import { DependencyUnavailableError, NotFoundError } from '../http/problem/index.js';
+import { DependencyUnavailableError, NotFoundError } from '../../domain/shared/errors.js';
 
-export {
-  PrismaClientKnownRequestError as PrismaClientKnownRequestError,
-  PrismaClientInitializationError as PrismaClientInitializationError,
-};
-
-export function isPrismaKnownRequestError(error: unknown): error is PrismaClientKnownRequestError {
+/**
+ * Prisma exposes its error classes on the runtime entrypoint. They are absent
+ * from the `Prisma` namespace at runtime, so importing them here keeps the
+ * lookup in one place.
+ */
+export function isPrismaKnownRequestError(
+  error: unknown,
+): error is PrismaClientKnownRequestError {
   return error instanceof PrismaClientKnownRequestError;
 }
 
@@ -30,8 +35,6 @@ export function translatePrismaError(error: unknown): unknown {
     switch (error.code) {
       case 'P2025':
         return new NotFoundError('Resource not found');
-      case 'P2002':
-        return new DependencyUnavailableError('Resource already exists');
       case 'P1001':
       case 'P1002':
         return new DependencyUnavailableError('Database is unavailable');

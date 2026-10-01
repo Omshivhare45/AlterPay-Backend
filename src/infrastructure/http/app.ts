@@ -3,8 +3,11 @@ import express, { type Express, type Router } from 'express';
 import helmet from 'helmet';
 import hpp from 'hpp';
 
+import type { Request } from 'express';
+
 import type { RequestContextStore } from '../../domain/shared/request-context.js';
 import type { HealthController } from '../../presentation/health/health.controller.js';
+import { createHealthRouter } from '../../presentation/health/health.routes.js';
 import type { Logger } from '../logging/index.js';
 import {
   createErrorHandler,
@@ -39,7 +42,17 @@ export function createApp(options: CreateAppOptions): Express {
       credentials: true,
     }),
   );
-  app.use(express.json({ limit: '1mb' }));
+  // Terminals sign the exact bytes they send, so the raw body is retained for
+  // signature verification. A re-serialised body could differ by key order or
+  // whitespace and would then fail verification spuriously.
+  app.use(
+    express.json({
+      limit: '1mb',
+      verify: (req, _res, buffer) => {
+        (req as Request & { rawBody?: string }).rawBody = buffer.toString('utf8');
+      },
+    }),
+  );
   app.use(express.urlencoded({ extended: false, limit: '1mb' }));
   app.use(hpp());
 
@@ -59,12 +72,9 @@ export function createApp(options: CreateAppOptions): Express {
 function healthProbeRouter(healthController: HealthController): Router {
   const router = express.Router();
 
-  router.get('/health', (req, res, next) => {
-    void healthController.liveness(req, res).catch(next);
-  });
-  router.get('/ready', (req, res, next) => {
-    void healthController.readiness(req, res).catch(next);
-  });
+  // Routes are declared through the presentation router; these unversioned
+  // aliases reuse the same controller so both paths cannot drift apart.
+  router.use('/', createHealthRouter(healthController));
 
   return router;
 }

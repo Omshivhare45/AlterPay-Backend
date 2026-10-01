@@ -1,3 +1,9 @@
+// AlterPay — Prisma schema
+// Phase 1: identity, access control, merchants, shops, terminals, sessions.
+//
+// Scope note: merchant/shop/terminal models here exist to carry tenant context
+// and identity. Business behaviour for them lands in later phases.
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -5,4 +11,373 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// Platform operators. Not tied to a merchant; read-only by default.
+enum AdminRole {
+  SUPER_ADMIN
+  OPERATIONS
+  SUPPORT
+  COMPLIANCE
+}
+
+/// A user's standing within one merchant tenant.
+enum MembershipRole {
+  OWNER
+  ADMIN
+  FINANCE
+  OPERATOR
+  VIEWER
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DISABLED
+}
+
+enum MerchantStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum ShopStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TerminalStatus {
+  ACTIVE
+  DISABLED
+  REVOKED
+}
+
+/// Purpose an access token was issued for. Admin tokens are short-lived and
+/// require a second factor, so they carry their own subject kind.
+enum TokenAudience {
+  MERCHANT
+  ADMIN
+  TERMINAL
+}
+
+enum OtpPurpose {
+  /// One-time code emailed to a merchant user during login.
+  MERCHANT_LOGIN
+  /// One-time code emailed to a platform admin before TOTP.
+  ADMIN_LOGIN
+}
+
+enum OtpChannel {
+  EMAIL
+  SMS
+}
+
+enum OtpStatus {
+  PENDING
+  CONSUMED
+  EXPIRED
+  FAILED
+}
+
+enum AuditOutcome {
+  SUCCESS
+  FAILURE
+  DENIED
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+/// The tenant root. Every other business record is scoped by merchantId.
+model Merchant {
+  id        String         @id @default(uuid(7)) @db.Uuid
+  legalName String         @map("legal_name") @db.VarChar(255)
+  status    MerchantStatus @default(PENDING_VERIFICATION)
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  shops         Shop[]
+  memberships   MerchantMembership[]
+  terminals     Terminal[]
+  sessions      Session[]
+  refreshTokens RefreshToken[]
+  otpChallenges OtpChallenge[]
+
+  @@index([status])
+  @@map("merchants")
+}
+
+/// A physical point of sale belonging to a merchant.
+model Shop {
+  id         String     @id @default(uuid(7)) @db.Uuid
+  merchantId String     @map("merchant_id") @db.Uuid
+  code       String     @db.VarChar(64)
+  name       String     @db.VarChar(255)
+  status     ShopStatus @default(ACTIVE)
+  createdAt  DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  merchant  Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  terminals Terminal[]
+
+  @@unique([merchantId, code])
+  @@index([merchantId])
+  @@map("shops")
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+/// A person. Users have no tenant of their own; access is granted through
+/// memberships (merchant side) or the admin role (platform side).
+model User {
+  id              String     @id @default(uuid(7)) @db.Uuid
+  email           String     @db.VarChar(320)
+  phone           String?    @db.VarChar(32)
+  fullName        String?    @map("full_name") @db.VarChar(255)
+  status          UserStatus @default(INVITED)
+  emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(3)
+
+  /// Argon2id hash of the optional staff password. Absent means the account
+  /// authenticates by OTP only. Never selected into API responses.
+  passwordHash String? @map("password_hash") @db.VarChar(255)
+
+  /// Encrypted (AEAD) TOTP shared secret. Admin-only; used at login and not as
+  /// a step-up factor. Must be reversible: verifying a TOTP code recomputes it
+  /// from the secret, so a one-way hash cannot be used here.
+  totpSecretCiphertext String?   @map("totp_secret_ciphertext") @db.VarChar(512)
+  totpEnabledAt        DateTime? @map("totp_enabled_at") @db.Timestamptz(3)
+
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime? @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt         DateTime? @map("last_login_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  adminRole     AdminRole?
+  memberships   MerchantMembership[]
+  sessions      Session[]
+  refreshTokens RefreshToken[]
+  otpChallenges OtpChallenge[]
+  auditEvents   AuditEvent[]
+
+  @@unique([email])
+  @@index([status])
+  @@map("users")
+}
+
+/// Grants a user access to exactly one merchant tenant under a role.
+model MerchantMembership {
+  id         String         @id @default(uuid(7)) @db.Uuid
+  userId     String         @map("user_id") @db.Uuid
+  merchantId String         @map("merchant_id") @db.Uuid
+  role       MembershipRole
+  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, merchantId])
+  @@index([merchantId, role])
+  @@map("merchant_memberships")
+}
+
+// ---------------------------------------------------------------------------
+// Machine identity
+// ---------------------------------------------------------------------------
+
+/// A POS terminal. Authenticates with X-Api-Key + X-Api-Signature, never with
+/// a user session.
+model Terminal {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  merchantId String  @map("merchant_id") @db.Uuid
+  shopId     String? @map("shop_id") @db.Uuid
+
+  /// Public identifier sent as X-Api-Key. Unique and non-guessable.
+  apiKey String @unique @map("api_key") @db.VarChar(128)
+
+  /// AEAD-encrypted copies of the terminal's shared signing secret. Verification
+  /// recomputes an HMAC and compares, so the secret must be recoverable; a
+  /// one-way hash cannot serve here. Multiple entries allow rotation, with the
+  /// last element treated as the active secret.
+  ///
+  /// Encryption is what protects the value at rest, which is the property the
+  /// one-way-hash rule was aiming at.
+  secretCiphertexts String[] @map("secret_ciphertexts")
+
+  status TerminalStatus @default(ACTIVE)
+  label  String?        @db.VarChar(255)
+
+  /// When non-empty, the caller IP must appear in this list (CIDR or literal).
+  ipAllowList String[] @default([]) @map("ip_allow_list")
+
+  /// Requests allowed per window. Applied per terminal by the auth middleware.
+  rateLimitPerMinute Int @default(120) @map("rate_limit_per_minute")
+
+  credentialRotatedAt DateTime? @map("credential_rotated_at") @db.Timestamptz(3)
+  lastSeenAt          DateTime? @map("last_seen_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  merchant Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop     Shop?     @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  sessions Session[]
+
+  @@index([merchantId])
+  @@map("terminals")
+}
+
+// ---------------------------------------------------------------------------
+// Sessions and credentials
+// ---------------------------------------------------------------------------
+
+/// Server-side record of an issued session. Access tokens reference it by id so
+/// a session can be revoked before the JWT expires.
+model Session {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  userId     String? @map("user_id") @db.Uuid
+  terminalId String? @map("terminal_id") @db.Uuid
+
+  /// Null for platform (admin) sessions, which are not tenant-bound. Every
+  /// merchant-scoped session must carry one.
+  merchantId String? @map("merchant_id") @db.Uuid
+
+  audience TokenAudience
+  /// Opaque per-session value bound into the access token as `sid`.
+  tokenId  String        @unique @map("token_id") @db.VarChar(64)
+
+  ipAddress String? @map("ip_address") @db.VarChar(64)
+  userAgent String? @map("user_agent") @db.VarChar(512)
+
+  /// Hash of the current refresh token. Kept so rotation can detect replay of
+  /// an already-consumed token.
+  currentRefreshTokenHash String? @map("current_refresh_token_hash") @db.VarChar(128)
+
+  expiresAt     DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(3)
+  revokedReason String?   @map("revoked_reason") @db.VarChar(128)
+
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user          User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  terminal      Terminal?      @relation(fields: [terminalId], references: [id], onDelete: Cascade)
+  merchant      Merchant?      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId])
+  @@index([terminalId])
+  @@index([merchantId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+/// Rotating refresh token. Only the hash is stored; each use issues a
+/// replacement and retires the old row, so a replayed token is detectable.
+model RefreshToken {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  sessionId String  @map("session_id") @db.Uuid
+  userId    String? @map("user_id") @db.Uuid
+
+  /// Mirrors Session.merchantId; null for platform sessions.
+  merchantId String? @map("merchant_id") @db.Uuid
+
+  tokenHash String    @unique @map("token_hash") @db.VarChar(128)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  rotatedAt DateTime? @map("rotated_at") @db.Timestamptz(3)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  session  Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user     User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  merchant Merchant? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// One-time codes
+// ---------------------------------------------------------------------------
+
+/// Short-lived numeric code sent out-of-band. Only the hash is stored.
+model OtpChallenge {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  userId     String  @map("user_id") @db.Uuid
+  merchantId String? @map("merchant_id") @db.Uuid
+
+  purpose OtpPurpose
+  channel OtpChannel @default(EMAIL)
+
+  /// Argon2id hash of the code. The plaintext is delivered by an integration
+  /// and never persisted or logged.
+  codeHash String @map("code_hash") @db.VarChar(255)
+
+  status      OtpStatus @default(PENDING)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5) @map("max_attempts")
+
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  merchant Merchant? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([expiresAt])
+  @@map("otp_challenges")
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+/// Append-only security record. Written for every auth event and every admin
+/// mutation. `reason` is mandatory for admin writes.
+model AuditEvent {
+  id              String  @id @default(uuid(7)) @db.Uuid
+  merchantId      String? @map("merchant_id") @db.Uuid
+  actorUserId     String? @map("actor_user_id") @db.Uuid
+  actorTerminalId String? @map("actor_terminal_id") @db.Uuid
+
+  action     String  @db.VarChar(128)
+  resource   String? @db.VarChar(128)
+  resourceId String? @map("resource_id") @db.VarChar(64)
+
+  outcome AuditOutcome @default(SUCCESS)
+
+  /// Operator justification. Required on admin mutations.
+  reason String? @db.VarChar(512)
+
+  /// Request correlation, so an audit row can be tied to logs and traces.
+  requestId     String? @map("request_id") @db.VarChar(128)
+  correlationId String? @map("correlation_id") @db.VarChar(128)
+  ipAddress     String? @map("ip_address") @db.VarChar(64)
+
+  /// Structured, non-sensitive payload. Never contains credentials or codes.
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actorUser User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_events")
 }

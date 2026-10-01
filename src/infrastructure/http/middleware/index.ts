@@ -1,7 +1,6 @@
 export {
   createErrorHandler as createErrorHandler,
   createNotFoundHandler as createNotFoundHandler,
-  translateInitializationError as translateInitializationError,
 } from './error-handler.middleware.js';
 export type { ErrorHandlerOptions as ErrorHandlerOptions } from './error-handler.middleware.js';
 export {

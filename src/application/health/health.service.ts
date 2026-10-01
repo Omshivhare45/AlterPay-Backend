@@ -7,16 +7,19 @@ import type {
   ReadinessReport,
 } from './health.types.js';
 
-const PROBE_TIMEOUT_MS = 5_000;
+const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
 
-async function runProbe(probe: HealthProbe): Promise<CheckOutcome> {
+async function runProbe(
+  probe: HealthProbe,
+  timeoutMs: number,
+): Promise<CheckOutcome> {
   try {
     return await Promise.race([
       probe.check(),
       new Promise<CheckOutcome>((_resolve, reject) => {
         const timer = setTimeout(
           () => reject(new Error(`Health probe "${probe.name}" timed out`)),
-          PROBE_TIMEOUT_MS,
+          timeoutMs,
         );
         timer.unref?.();
       }),
@@ -26,8 +29,11 @@ async function runProbe(probe: HealthProbe): Promise<CheckOutcome> {
   }
 }
 
-async function runProbes(probes: readonly HealthProbe[]): Promise<Record<string, CheckOutcome>> {
-  const outcomes = await Promise.all(probes.map((probe) => runProbe(probe)));
+async function runProbes(
+  probes: readonly HealthProbe[],
+  timeoutMs: number,
+): Promise<Record<string, CheckOutcome>> {
+  const outcomes = await Promise.all(probes.map((probe) => runProbe(probe, timeoutMs)));
   const checks: Record<string, CheckOutcome> = {};
   probes.forEach((probe, index) => {
     checks[probe.name] = outcomes[index] ?? 'fail';
@@ -46,6 +52,8 @@ export interface HealthServiceDeps {
   clock: Clock;
   version: string;
   probes?: readonly HealthProbe[];
+  /** Per-probe budget. A probe exceeding it counts as failed. */
+  probeTimeoutMs?: number;
 }
 
 /**
@@ -54,7 +62,7 @@ export interface HealthServiceDeps {
  */
 export function buildHealthService(deps: HealthServiceDeps): () => Promise<HealthReport> {
   return async function getHealth(): Promise<HealthReport> {
-    const checks = await runProbes(deps.probes ?? []);
+    const checks = await runProbes(deps.probes ?? [], deps.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS);
     return {
       status: deriveStatus(checks),
       uptimeSeconds: deps.clock.uptimeSeconds(),
@@ -72,7 +80,7 @@ export function buildHealthService(deps: HealthServiceDeps): () => Promise<Healt
  */
 export function buildReadinessService(deps: HealthServiceDeps): () => Promise<ReadinessReport> {
   return async function getReadiness(): Promise<ReadinessReport> {
-    const checks = await runProbes(deps.probes ?? []);
+    const checks = await runProbes(deps.probes ?? [], deps.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS);
     return {
       ready: !Object.values(checks).includes('fail'),
       timestamp: deps.clock.now().toISOString(),

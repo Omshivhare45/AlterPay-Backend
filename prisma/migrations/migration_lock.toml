@@ -1,0 +1,2 @@
+-- AlterPay Phase 1 migration lock
+provider = "postgresql"

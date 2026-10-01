@@ -1,4 +1,3 @@
-import { PrismaClientInitializationError } from '@prisma/client';
 import type { ErrorRequestHandler, Request, RequestHandler } from 'express';
 
 import { NotFoundError } from '../../../domain/shared/errors.js';
@@ -21,14 +20,6 @@ type ContextualRequest = Request & {
 
 function defaultInstanceResolver(req: Request): string {
   return `${req.method} ${req.path}`;
-}
-
-/** Maps a Prisma initialization failure to a dependency outage. */
-export function translateInitializationError(error: unknown): unknown {
-  if (error instanceof PrismaClientInitializationError) {
-    return translatePrismaError(error);
-  }
-  return error;
 }
 
 /**
@@ -70,8 +61,8 @@ export function createErrorHandler(options: ErrorHandlerOptions): ErrorRequestHa
       correlationId: contextual.context?.correlationId,
     };
 
-    const translated = translatePrismaError(translateInitializationError(error));
-    const { problem, expose } = normalizeError(translated, context);
+    const translated = translatePrismaError(error);
+    const { problem } = normalizeError(translated, context);
 
     const logPayload = {
       err: translated,

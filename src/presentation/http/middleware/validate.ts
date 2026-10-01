@@ -64,9 +64,9 @@ export function validateRequest(schemas: ValidationSchemas) {
  * wrapping keeps intent obvious and preserves types.
  */
 export function asyncHandler(
-  handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown> | unknown,
+  handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown>,
 ): RequestHandler {
   return (req, res, next) => {
-    void Promise.resolve(handler(req, res, next)).catch(next);
+    void handler(req, res, next).catch(next);
   };
 }

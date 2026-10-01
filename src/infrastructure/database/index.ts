@@ -8,4 +8,3 @@ export {
   isPrismaKnownRequestError as isPrismaKnownRequestError,
   translatePrismaError as translatePrismaError,
 } from './prisma-errors.js';
-export type { PrismaClient as PrismaClient } from './prisma-client.js';
