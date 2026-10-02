@@ -122,7 +122,17 @@ export default tseslint.config(
   },
   {
     // Test doubles are synchronous by design; require-await is noise there.
-    files: ['tests/**/*.ts'],
+    // The mock providers and in-memory stores under src/integrations are the
+    // same category — they answer an async contract synchronously so a test does
+    // not have to model latency. Real adapters are not covered by this.
+    files: [
+      'tests/**/*.ts',
+      'src/integrations/mocks/**/*.ts',
+      'src/integrations/artifacts/in-memory-*.ts',
+      // Only the in-memory half of this module; the cipher-backed store above it
+      // genuinely awaits and stays under the rule.
+      'src/integrations/credentials/in-memory-credential-store.ts',
+    ],
     rules: {
       '@typescript-eslint/require-await': 'off',
     },

@@ -8,6 +8,7 @@ export type {
   ForbiddenError as ForbiddenError,
   InternalError as InternalError,
   NotFoundError as NotFoundError,
+  ProviderCapabilityUnavailableError as ProviderCapabilityUnavailableError,
   UnauthenticatedError as UnauthenticatedError,
   ValidationError as ValidationError,
 } from './errors.js';

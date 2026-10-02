@@ -1,8 +1,30 @@
 import { z } from 'zod';
 
+import type {
+  ProviderFamilyRoutingConfig,
+  ProviderPlatformConfig,
+} from '../../application/providers/index.js';
+import { defaultProviderPlatformConfig } from '../../integrations/registry/default-provider-platform.js';
+
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
 
 const ED25519_PEM = /-----BEGIN PRIVATE KEY-----[\s\S]+?-----END PRIVATE KEY-----/;
+
+/**
+ * Structural shape of one family's routing JSON.
+ *
+ * Structure only. Whether the resulting policy makes sense is a separate
+ * question, answered by `validateProviderPlatformConfig` at boot, so a malformed
+ * value and an impossible routing decision produce distinct, actionable errors.
+ */
+const providerRoutingSchema = z.object({
+  defaultProviderId: z.string().min(1),
+  providerIds: z.array(z.string().min(1)).min(1),
+  capabilities: z.record(z.string(), z.array(z.string())),
+  purposePreferences: z.record(z.string(), z.array(z.string())).default({}),
+  capabilityPreferences: z.record(z.string(), z.array(z.string())).default({}),
+  merchantOverrides: z.record(z.string(), z.array(z.string())).default({}),
+});
 
 export interface SigningKeyEntry {
   kid: string;
@@ -110,6 +132,27 @@ export const envSchema = z
 
     // --- Auth: OTP ---
     OTP_DELIVERY_PROVIDER: z.enum(['console']).default('console'),
+
+    // --- Providers: routing policy ---
+    // Per-family routing JSON. Shape:
+    //   { "defaultProviderId": "id",
+    //     "providerIds": ["id", ...],
+    //     "capabilities": { "id": ["PAN", ...] },
+    //     "purposePreferences": { "PURPOSE": ["id"] },
+    //     "capabilityPreferences": { "PAN": ["id"] },
+    //     "merchantOverrides": { "merchantId": ["id"] } }
+    // Omitted families fall back to the built-in mock platform, so an unset
+    // deployment still boots with every family servable.
+    PROVIDER_VERIFICATION: z.string().optional(),
+    PROVIDER_CREDIT_BUREAU: z.string().optional(),
+    PROVIDER_LENDING: z.string().optional(),
+    PROVIDER_LOAN_MIRROR: z.string().optional(),
+    PROVIDER_OTP: z.string().optional(),
+
+    // --- Providers: circuit-breaker policy ---
+    PROVIDER_HEALTH_FAILURE_THRESHOLD: z.coerce.number().int().min(1).default(5),
+    PROVIDER_HEALTH_OPEN_DURATION_MS: z.coerce.number().int().min(0).default(30_000),
+    PROVIDER_HEALTH_SUCCESS_THRESHOLD: z.coerce.number().int().min(1).default(2),
   })
   .superRefine((env, ctx) => {
     // Never ship stack traces or internal detail to clients in production.
@@ -179,6 +222,9 @@ export type AppConfig = {
       deliveryProvider: 'console';
     };
   };
+  providers: {
+    routing: ProviderPlatformConfig;
+  };
 };
 
 export function toAppConfig(env: Env): AppConfig {
@@ -225,6 +271,64 @@ export function toAppConfig(env: Env): AppConfig {
       otp: {
         deliveryProvider: env.OTP_DELIVERY_PROVIDER,
       },
+    },
+    providers: {
+      routing: toProviderPlatformConfig(env),
+    },
+  };
+}
+
+/**
+ * Parses one family's routing JSON.
+ *
+ * Throws `ConfigError` naming the offending variable rather than surfacing a
+ * bare JSON syntax error: whoever set the value needs to know which one.
+ */
+function parseProviderRouting(raw: string | undefined, key: string): ProviderFamilyRoutingConfig | null {
+  if (raw === undefined || raw.trim().length === 0) return null;
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch (error) {
+    throw new ConfigError([
+      {
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `is not valid JSON: ${(error as Error).message}`,
+      },
+    ]);
+  }
+
+  const parsed = providerRoutingSchema.safeParse(decoded);
+  if (!parsed.success) {
+    throw new ConfigError(
+      parsed.error.issues.map((issue) => ({
+        code: z.ZodIssueCode.custom,
+        path: [key, ...issue.path],
+        message: issue.message,
+      })),
+    );
+  }
+
+  return parsed.data;
+}
+
+function toProviderPlatformConfig(env: Env): ProviderPlatformConfig {
+  const defaults = defaultProviderPlatformConfig();
+
+  return {
+    verification:
+      parseProviderRouting(env.PROVIDER_VERIFICATION, 'PROVIDER_VERIFICATION') ?? defaults.verification,
+    creditBureau:
+      parseProviderRouting(env.PROVIDER_CREDIT_BUREAU, 'PROVIDER_CREDIT_BUREAU') ?? defaults.creditBureau,
+    lending: parseProviderRouting(env.PROVIDER_LENDING, 'PROVIDER_LENDING') ?? defaults.lending,
+    loanMirror: parseProviderRouting(env.PROVIDER_LOAN_MIRROR, 'PROVIDER_LOAN_MIRROR') ?? defaults.loanMirror,
+    otp: parseProviderRouting(env.PROVIDER_OTP, 'PROVIDER_OTP') ?? defaults.otp,
+    health: {
+      failureThreshold: env.PROVIDER_HEALTH_FAILURE_THRESHOLD,
+      openDurationMs: env.PROVIDER_HEALTH_OPEN_DURATION_MS,
+      successThreshold: env.PROVIDER_HEALTH_SUCCESS_THRESHOLD,
     },
   };
 }

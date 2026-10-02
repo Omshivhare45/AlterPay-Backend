@@ -30,12 +30,16 @@ import { initSentry, shutdownSentry } from '../infrastructure/observability/inde
 import { createApiV1Router } from '../presentation/api/index.js';
 import { bearerAuth, terminalAuth } from '../presentation/http/middleware/index.js';
 import { createHealthController } from '../presentation/health/index.js';
-import { ConsoleOtpDeliveryProvider } from '../integrations/index.js';
+import type { ProviderPlatform } from '../integrations/registry/index.js';
+import { AuthOtpDeliveryAdapter, buildProviderPlatform } from '../integrations/index.js';
+import { LoggingProviderTelemetry } from '../integrations/transport/index.js';
 
 export interface Application {
   app: ReturnType<typeof createApp>;
   config: AppConfig;
   logger: Logger;
+  /** The provider registry and its simulators, for use cases and tests. */
+  providers: ProviderPlatform;
   shutdown: () => Promise<void>;
 }
 
@@ -46,6 +50,7 @@ export interface BuildApplicationOptions {
    */
   authPolicy?: AuthPolicy;
   delivery?: OtpDeliveryProvider;
+  now?: () => Date;
 }
 
 /**
@@ -76,6 +81,16 @@ export function buildApplication(
     getReadiness: buildReadinessService(healthDeps),
   });
 
+  // --- Phase 2: provider platform ------------------------------------------
+  // Built before anything that depends on it, so a routing configuration that
+  // cannot serve a declared capability fails the boot rather than the first
+  // customer request.
+  const providers = buildProviderPlatform({
+    config: config.providers.routing,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  const providerTelemetry = new LoggingProviderTelemetry(logger);
+
   // --- Phase 1: identity and access ----------------------------------------
 
   const time = new SystemTimeProvider();
@@ -102,8 +117,15 @@ export function buildApplication(
   const terminals = new PrismaTerminalRepository(prisma);
 
   const audit = new PrismaAuditLog(prisma, logger);
+  // Auth OTP delivery routes through the same platform as every other provider,
+  // so login codes inherit failover, health tracking and redaction for free.
   const delivery =
-    options.delivery ?? new ConsoleOtpDeliveryProvider();
+    options.delivery ??
+    new AuthOtpDeliveryAdapter({
+      registry: providers.registry,
+      telemetry: providerTelemetry,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
   const policy = options.authPolicy ?? DEFAULT_AUTH_POLICY;
 
   const authDeps = {
@@ -155,7 +177,7 @@ export function buildApplication(
     await shutdownSentry(logger);
   };
 
-  return { app, config, logger, shutdown };
+  return { app, config, logger, providers, shutdown };
 }
 
 export { terminalAuth };

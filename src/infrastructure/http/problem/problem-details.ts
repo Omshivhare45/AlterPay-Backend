@@ -85,6 +85,14 @@ const ERROR_MAPPINGS: Record<string, ErrorMapping> = {
     title: 'Service Unavailable',
     type: `${BASE_PROBLEM_URI}/dependency-unavailable`,
   },
+  PROVIDER_CAPABILITY_UNAVAILABLE: {
+    // 422, not 503. No vendor can serve the requested capability, so this will
+    // still be true on retry. Reporting it as unavailable would invite a caller
+    // to keep retrying a request that cannot ever succeed.
+    status: 422,
+    title: 'Provider Capability Unavailable',
+    type: `${BASE_PROBLEM_URI}/provider-capability-unavailable`,
+  },
   INTERNAL_ERROR: {
     status: 500,
     title: 'Internal Server Error',

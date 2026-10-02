@@ -83,6 +83,23 @@ export class DependencyUnavailableError extends AppError {
   }
 }
 
+/**
+ * A requested provider capability cannot be served by any configured vendor.
+ *
+ * Distinct from `DependencyUnavailableError` on purpose: the caller asked for
+ * something the platform cannot do at all (no Aadhaar vendor is configured),
+ * which is a permanent answer, not a transient one. Retrying, or failing over,
+ * cannot help, so the caller is told the capability is missing rather than being
+ * handed a degraded verification they did not ask for.
+ */
+export class ProviderCapabilityUnavailableError extends AppError {
+  readonly code = 'PROVIDER_CAPABILITY_UNAVAILABLE';
+
+  constructor(message: string, details?: ErrorDetails, options?: ErrorOptions) {
+    super(message, details, options);
+  }
+}
+
 /** Unexpected failure. Never leak internals to clients. */
 export class InternalError extends AppError {
   readonly code = 'INTERNAL_ERROR';
